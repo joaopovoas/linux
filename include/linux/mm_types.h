@@ -71,6 +71,14 @@ struct mem_cgroup;
 #define _struct_page_alignment	__aligned(sizeof(unsigned long))
 #endif
 
+
+struct lazy_tlb_ubc {
+	struct list_head list_head;
+	struct vm_area_struct *vma;
+	unsigned long address;
+	bool writable;
+}
+
 struct page {
 	unsigned long flags;		/* Atomic flags, some possibly
 					 * updated asynchronously */
