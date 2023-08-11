@@ -72,12 +72,19 @@ struct mem_cgroup;
 #endif
 
 
-struct lazy_tlb_ubc {
+struct lazy_tlb_batch_entry {
 	struct list_head list_head;
-	struct vm_area_struct *vma;
-	unsigned long address;
-	bool writable;
-}
+	cpumask_t cpu_mask;
+	int batch_size;
+	unsigned long address[NR_MAX_BATCHED_MIGRATION];
+	pte_t pte[NR_MAX_BATCHED_MIGRATION];
+	int epoch;
+};
+
+
+
+
+
 
 struct page {
 	unsigned long flags;		/* Atomic flags, some possibly

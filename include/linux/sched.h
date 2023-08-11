@@ -1531,7 +1531,12 @@ struct task_struct {
 	struct user_event_mm		*user_event_mm;
 #endif
 
-	struct list_head lazy_tlb_ubc_lst;
+	struct list_head lazy_tlb_ubc_lst;   
+	atomic_t epoch_leader;
+    atomic_t current_epoch;
+	atomic_t current_epoch_batch_size;
+    cpumask_t current_epoch_cpu_mask;
+    spinlock_t lay_tlb_lock;   
 
 	/*
 	 * New fields for task_struct should be added above here, so that

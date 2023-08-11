@@ -1817,26 +1817,28 @@ void try_to_unmap(struct folio *folio, enum ttu_flags flags)
 		rmap_walk(folio, &rwc);
 }
 
-static void add_lazy_tlb_ubc_flush(unsigned long address, pte_t pte)
+static void add_lazy_tlb_ubc_flush(struct lazy_tlb_batch_entry* lazy_batch, unsigned long address, pte_t pte)
 {
-	// !needs to store in task_struct (current->pid, address, pte)
+	int index = lazy_batch->batch_size;
+	
+	lazy_batch->address[index] = address;
+	lazy_batch->pte[index] = pte;
 
+	lazy_batch->cpu_mask
+
+	list_add(tlb_info->list_head, current->lazy_tlb_ubc_lst);
+
+	
+
+	lazy_batch->batch_size++;
 	/*
 	 * Ensure compiler does not re-order the setting of tlb_flush_batched
 	 * before the PTE is cleared.
 	 */
-	barrier();
-	batch = atomic_read(&mm->tlb_flush_batched);
-
-	if (!atomic_try_cmpxchg(&mm->tlb_flush_batched, &batch, 1))
-		goto retry;
-
-	{
-		atomic_inc(&mm->tlb_flush_batched);
-	}
+	//barrier();
 }
 
-pte_t lazy_tlb_flush(pid_t pid, unsigned long address, pte_t pte)
+/*pte_t lazy_tlb_flush(pid_t pid, unsigned long address, pte_t pte)
 {
 	nodemask_t task_nodes;
 	struct mm_struct *mm;
@@ -1859,23 +1861,56 @@ void lazy_flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
 		.stride_shift = stride_shift,
 		.freed_tables = freed_tables,
 		.new_tlb_gen = inc_mm_tlb_gen(
-			mm), /* This is also a barrier that synchronizes with switch_mm(). */
+			mm), // This is also a barrier that synchronizes with switch_mm(). 
 		.initiating_cpu = smp_processor_id(),
 	};
 
-	/* Should we flush just the requested range? 
-	if ((end == TLB_FLUSH_ALL) ||
-	    ((end - start) >> stride_shift) > tlb_single_page_flush_ceiling) {
-		start = 0;
-		end = TLB_FLUSH_ALL;
-	}
-	*/
+	// Should we flush just the requested range? 
+	//if ((end == TLB_FLUSH_ALL) ||
+	//    ((end - start) >> stride_shift) > tlb_single_page_flush_ceiling) {
+	//	start = 0;
+	//	end = TLB_FLUSH_ALL;
+	//}
+	
 
 	lockdep_assert_irqs_enabled();
 	local_irq_disable();
 	flush_tlb_func(&info);
 	local_irq_enable();
+}*/
+
+
+lazy_tlb_batch_entry* alloc_lazy_batch() {
+    struct lazy_tlb_batch_entry *entry;
+    int current_epoch_batch_size;
+
+    entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+    if (!entry) {
+        pr_err("Failed to allocate memory for struct lazy_tlb_batch_entry.\n");
+        return;
+    }
+  
+    current_epoch_batch_size = atomic_read(&current->current_epoch_batch_size);
+
+    if (current_epoch_batch_size < NR_MAX_BATCHED_MIGRATION) {
+        entry->epoch = current_epoch_val;
+    } else {
+        entry->epoch = current_epoch_val+1;
+    }
+
+	entry->batch_size = 0;
+	entry->cpu_mask = CPU_MASK_NONE;
+	cmp_xchg(&epoch_leader, -1, smp_processor_id());
+
+
+    /* Safely add to the global list */
+    spin_lock(current->lay_tlb_lock);
+    list_add_tail(&entry->list_head, &current->lazy_tlb_ubc_lst);
+    spin_unlock(current->lay_tlb_lock);
+
+	return entry;
 }
+
 
 /*
  * @arg: enum ttu_flags will be passed to this argument.
@@ -1884,7 +1919,7 @@ void lazy_flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
  * containing migration entries.
  */
 static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
-			       unsigned long address, void *arg)
+			       unsigned long address, void *arg, lazy_tlb_batch_entry* batch_entry)
 {
 	struct mm_struct *mm = vma->vm_mm;
 	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
@@ -1892,8 +1927,12 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 	struct page *subpage;
 	bool anon_exclusive, ret = true;
 	struct mmu_notifier_range range;
-	enum ttu_flags flags = (enum ttu_flags)(long)arg;
+	//enum ttu_flags flags = (enum ttu_flags)(long)arg;
 	unsigned long pfn;
+
+	void **args = (void **)arg;
+    enum ttu_flags flags = (enum ttu_flags)(long)args[0];
+    struct lazy_tlb_batch_entry *lazy_batch = (struct lazy_tlb_batch_entry *)args[1];
 
 	/*
 	 * When racing against e.g. zap_pte_range() on another cpu,
@@ -2036,7 +2075,7 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 				pteval = ptep_get_and_clear(mm, address,
 							    pvmw.ptep);
 
-				add_to_tlb_ubc_flush(address, pteval);
+				add_to_tlb_ubc_flush(lazy_batch, address, pteval);
 
 			} else if (pte_write(*pvmw.pte)) {
 				flush_cache_page(vma, address,
@@ -2234,9 +2273,14 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
  */
 void try_to_migrate(struct folio *folio, enum ttu_flags flags)
 {
+	void *args[2];
+	lazy_tlb_batch_entry* batch_entry = alloc_lazy_batch();
+    args[0] = (void *)flags;  // Store the enum as a pointer
+    args[1] = (void *)batch_entry;
+
 	struct rmap_walk_control rwc = {
 		.rmap_one = try_to_migrate_one,
-		.arg = (void *)flags,
+		.arg = args,
 		.done = folio_not_mapped,
 		.anon_lock = folio_lock_anon_vma_read,
 	};

@@ -210,7 +210,14 @@ struct task_struct init_task
 	.seccomp	= { .filter_count = ATOMIC_INIT(0) },
 #endif
 
-	.lazy_tlb_ubc_lst =  LIST_HEAD_INIT(init_task.lazy_tlb_ubc_lst),
+	.lazy_tlb_ubc_lst = LIST_HEAD_INIT(init_task.lazy_tlb_ubc_lst),
+    .epoch_leader = ATOMIC_INIT(-1),
+    .current_epoch = ATOMIC_INIT(0),
+    .current_epoch_batch_size = ATOMIC_INIT(0),
+    .current_epoch_cpu_mask = CPU_MASK_NONE, // Initially, no CPUs are set.
+    .lay_tlb_lock = __SPIN_LOCK_UNLOCKED(init_task.lay_tlb_lock),
+
+
 };
 EXPORT_SYMBOL(init_task);
 
